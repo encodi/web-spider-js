@@ -1,5 +1,5 @@
 # web-spider-js
- Web Spider
+Web Spider with NodeJS
 
 # run
 node spider-cli.js [url] [nesting]
