@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import superagent from 'superagent';
 import mkdirp from 'mkdirp';
-import { urlToFilename } from "./util.js";
+import { urlToFilename, getPageLinks } from "./util.js";
 
 function saveFile(fileName, contents, cb) {
   mkdirp(path.dirname(fileName), err => {
@@ -29,17 +29,51 @@ function download (url, fileName, cb) {
   });
 }
 
-export function spider(url, cb) {
-  const fileName = urlToFilename(url);
-  fs.access(fileName, err => {
-    if (!err || err.code !== 'ENOENT') {
-      return cb(null, fileName, false);
+function spiderLinks(currentUrl, body, nesting, cb) {
+  if (nesting === 0) {
+    // Avoid zalgo
+    return process.nextTick(cb);
+  }
+
+  const links = getPageLinks(currentUrl, body);
+  if (links.length === 0) {
+    return process.nextTick(cb);
+  }
+
+  function iterate(index) {
+    if (index === links.length) {
+      return cb();
     }
-    download(url, fileName, err => {
+
+    spider(links[index], nesting - 1, function (err) {
       if (err) {
         return cb(err);
       }
-      cb(null, fileName, true);
+      iterate(index + 1);
     });
+  }
+
+  iterate(0);
+}
+
+export function spider(url, nesting, cb) {
+  const fileName = urlToFilename(url);
+  fs.readFile(fileName, 'utf8', (err, fileContent) => {
+    if (err) {
+      if (err.code !== 'ENOENT') {
+        return cb(err);
+      }
+
+      // file doesn't exist, download it
+      return download(url, fileName, (err, requestContent) => {
+        if (err) {
+          return cb(err);
+        }
+        spiderLinks(url, requestContent, nesting, cb);
+      });
+    }
+
+    // file already exists
+    spiderLinks(url, fileContent, nesting, cb);
   });
 }
