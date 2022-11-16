@@ -1,11 +1,11 @@
-import fs from 'fs';
-import path from 'path';
-import superagent from 'superagent';
-import mkdirp from 'mkdirp';
+import fs from "fs";
+import path from "path";
+import superagent from "superagent";
+import mkdirp from "mkdirp";
 import { urlToFilename, getPageLinks } from "./util.js";
 
 function saveFile(fileName, contents, cb) {
-  mkdirp(path.dirname(fileName), err => {
+  mkdirp(path.dirname(fileName), (err) => {
     if (err) {
       return cb(err);
     }
@@ -13,13 +13,13 @@ function saveFile(fileName, contents, cb) {
   });
 }
 
-function download (url, fileName, cb) {
+function download(url, fileName, cb) {
   console.log(`Downloading ${url} into ${fileName}`);
   superagent.get(url).end((err, res) => {
     if (err) {
       return cb(err);
     }
-    saveFile(fileName, res.text, err => {
+    saveFile(fileName, res.text, (err) => {
       if (err) {
         return cb(err);
       }
@@ -29,38 +29,24 @@ function download (url, fileName, cb) {
   });
 }
 
-function spiderLinks(currentUrl, body, nesting, cb) {
+function spiderLinks(currentUrl, body, nesting, queue) {
   if (nesting === 0) {
-    // Avoid zalgo
-    return process.nextTick(cb);
+    return;
   }
 
   const links = getPageLinks(currentUrl, body);
   if (links.length === 0) {
-    return process.nextTick(cb);
+    return;
   }
 
-  let completed = 0;
-  let hasErrors = false;
-
-  function done (err) {
-    if (err) {
-      hasErrors = true;
-      return cb(err);
-    }
-    if (++completed === links.length && !hasErrors) {
-      return cb();
-    }
-  }
-
-  links.forEach(link => spider(link, nesting - 1, done));
+  links.forEach((link) => spider(link, nesting - 1, queue));
 }
 
-export function spider(url, nesting, cb) {
+export function spiderTask(url, nesting, queue, cb) {
   const fileName = urlToFilename(url);
-  fs.readFile(fileName, 'utf8', (err, fileContent) => {
+  fs.readFile(fileName, "utf8", (err, fileContent) => {
     if (err) {
-      if (err.code !== 'ENOENT') {
+      if (err.code !== "ENOENT") {
         return cb(err);
       }
 
@@ -69,11 +55,25 @@ export function spider(url, nesting, cb) {
         if (err) {
           return cb(err);
         }
-        spiderLinks(url, requestContent, nesting, cb);
+        spiderLinks(url, requestContent, nesting, queue);
+        return cb();
       });
     }
 
     // file already exists
-    spiderLinks(url, fileContent, nesting, cb);
+    spiderLinks(url, fileContent, nesting, queue);
+    return cb();
+  });
+}
+
+const spidering = new Set();
+export function spider(url, nesting, queue) {
+  if (spidering.has(url)) {
+    return;
+  }
+
+  spidering.add(url);
+  queue.pushTask((done) => {
+    spiderTask(url, nesting, queue, done);
   });
 }
