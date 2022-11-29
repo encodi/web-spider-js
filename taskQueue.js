@@ -1,34 +1,51 @@
-import { EventEmitter } from "events";
-
-export class TaskQueue extends EventEmitter {
+export class TaskQueue {
   constructor(concurrency) {
-    super();
-    this.concurrency = concurrency;
-    this.running = 0;
-    this.queue = [];
+    this.taskQueue = [];
+    this.consumerQueue = [];
+
+    // spawn consumers
+    for (let i = 0; i < concurrency; i++) {
+      this.consumer();
+    }
   }
 
-  pushTask(task) {
-    this.queue.push(task);
-    process.nextTick(this.next.bind(this));
-    return this;
+  async consumer() {
+    while (true) {
+      try {
+        const task = await this.getNextTask();
+        await task();
+      } catch (err) {
+        console.error(err);
+      }
+    }
   }
 
-  next() {
-    if (this.running === 0 && this.queue.length === 0) {
-      return this.emit("empty");
-    }
+  getNextTask() {
+    return new Promise((resolve) => {
+      if (this.taskQueue.length !== 0) {
+        return resolve(this.taskQueue.shift());
+      }
 
-    while (this.running < this.concurrency && this.queue.length) {
-      const task = this.queue.shift();
-      task((err) => {
-        if (err) {
-          this.emit("error", err);
-        }
-        this.running--;
-        process.nextTick(this.next.bind(this));
-      });
-      this.running++;
-    }
+      this.consumerQueue.push(resolve);
+    });
+  }
+
+  runTask(task) {
+    return new Promise((resolve, reject) => {
+      const taskWrapper = () => {
+        const taskPromise = task();
+        taskPromise.then(resolve, reject);
+        return taskPromise;
+      };
+
+      if (this.consumerQueue.length !== 0) {
+        // there is a sleeping consumer available, use it to run our task
+        const consumer = this.consumerQueue.shift();
+        consumer(taskWrapper);
+      } else {
+        // all consumers are busy, enqueue the task
+        this.taskQueue.push(taskWrapper);
+      }
+    });
   }
 }

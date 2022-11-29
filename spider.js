@@ -1,79 +1,57 @@
-import fs from "fs";
-import path from "path";
+import { promises as fsPromises } from "fs";
+import { dirname } from "path";
 import superagent from "superagent";
 import mkdirp from "mkdirp";
-import { urlToFilename, getPageLinks } from "./util.js";
+import { urlToFilename, getPageLinks } from "./utils.js";
+import { promisify } from "util";
+import { TaskQueue } from "./taskQueue.js";
 
-function saveFile(fileName, contents, cb) {
-  mkdirp(path.dirname(fileName), (err) => {
-    if (err) {
-      return cb(err);
-    }
-    fs.writeFile(fileName, contents, cb);
-  });
+const mkdirpPromises = promisify(mkdirp);
+
+async function download(url, filename) {
+  console.log(`Downloading ${url}`);
+  const { text: content } = await superagent.get(url);
+  await mkdirpPromises(dirname(filename));
+  await fsPromises.writeFile(filename, content);
+  console.log(`Downloaded and saved: ${url}`);
+  return content;
 }
 
-function download(url, fileName, cb) {
-  console.log(`Downloading ${url} into ${fileName}`);
-  superagent.get(url).end((err, res) => {
-    if (err) {
-      return cb(err);
-    }
-    saveFile(fileName, res.text, (err) => {
-      if (err) {
-        return cb(err);
-      }
-      console.log(`Downloaded and saved: ${url}`);
-      cb(null, res.text);
-    });
-  });
-}
-
-function spiderLinks(currentUrl, body, nesting, queue) {
+async function spiderLinks(currentUrl, content, nesting, queue) {
   if (nesting === 0) {
     return;
   }
 
-  const links = getPageLinks(currentUrl, body);
-  if (links.length === 0) {
-    return;
-  }
+  const links = getPageLinks(currentUrl, content);
+  const promises = links.map((link) => spiderTask(link, nesting - 1, queue));
 
-  links.forEach((link) => spider(link, nesting - 1, queue));
-}
-
-export function spiderTask(url, nesting, queue, cb) {
-  const fileName = urlToFilename(url);
-  fs.readFile(fileName, "utf8", (err, fileContent) => {
-    if (err) {
-      if (err.code !== "ENOENT") {
-        return cb(err);
-      }
-
-      // file doesn't exist, download it
-      return download(url, fileName, (err, requestContent) => {
-        if (err) {
-          return cb(err);
-        }
-        spiderLinks(url, requestContent, nesting, queue);
-        return cb();
-      });
-    }
-
-    // file already exists
-    spiderLinks(url, fileContent, nesting, queue);
-    return cb();
-  });
+  return Promise.all(promises);
 }
 
 const spidering = new Set();
-export function spider(url, nesting, queue) {
+
+async function spiderTask(url, nesting, queue) {
   if (spidering.has(url)) {
     return;
   }
-
   spidering.add(url);
-  queue.pushTask((done) => {
-    spiderTask(url, nesting, queue, done);
+
+  const filename = urlToFilename(url);
+  const content = await queue.runTask(async () => {
+    try {
+      return await fsPromises.readFile(filename, "utf8");
+    } catch (err) {
+      if (err.code !== "ENOENT") {
+        throw err;
+      }
+
+      // The file doesn't exist, so let’s download it
+      return download(url, filename);
+    }
   });
+  return spiderLinks(url, content, nesting, queue);
+}
+
+export async function spider(url, nesting, concurrency) {
+  return spiderTask(url, nesting, new TaskQueue(concurrency));
 }
